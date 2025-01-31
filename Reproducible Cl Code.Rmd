@@ -1,0 +1,423 @@
+---
+title: "Reproducible Cl Code"
+author: "Alyssa Schubert"
+date: "2025-01-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Load required libraries
+
+```{r libraries}
+library(ggplot2)  
+library(dplyr)    
+library(caret)     
+library(randomForest) 
+library(readr)
+library(gridExtra)
+```
+
+## Load Datasets
+
+```{r datasets}
+
+##original dataset##
+url1 <- "https://raw.githubusercontent.com/alyssaschubert/Cl-Code/main/traindata_originalmodel.csv"
+traindata_original <- read.csv(url1)
+
+url2 <- "https://raw.githubusercontent.com/alyssaschubert/Cl-Code/main/testdata_originalmodel.csv"
+testdata_original <- read.csv(url2)
+
+##nonrandom dataset##
+
+#train
+url3 <- "https://raw.githubusercontent.com/alyssaschubert/Cl-Code/main/traindata_retrainedmodel.csv"
+traindata_nonrandom <- read.csv(url3)
+
+#test
+url4 <- "https://raw.githubusercontent.com/alyssaschubert/Cl-Code/main/testdata_retrainedmodel.csv"
+testdata_nonrandom <- read.csv(url4)
+
+#complete
+url5 <- "https://raw.githubusercontent.com/alyssaschubert/Cl-Code/main/nonrandom_order_dataset.csv"
+nonrandom_order_dataset <- read.csv(url5)
+
+##random dataset##
+url6 <- "https://raw.githubusercontent.com/alyssaschubert/Cl-Code/main/random_order_dataset.csv"
+random_order_dataset <- read.csv(url6)
+
+```
+
+## Load trained models
+
+```{r models}
+
+# Load trained model
+url7 <- "https://raw.githubusercontent.com/alyssaschubert/Cl-Code/main/original_model.rds"
+original_model <- readRDS(url(url7, "rb"))
+
+# Print model summary
+print(original_model)
+
+# Load trained model
+url8 <- "https://raw.githubusercontent.com/alyssaschubert/Cl-Code/main/retrained_model.rds"
+retrained_model <- readRDS(url(url8, "rb"))
+
+# Print model summary
+print(retrained_model)
+
+```
+
+## Function to calculative cumulative fouling feature
+
+```{r cumulative fouling function}
+
+predict_sequential_rf <- function(test_data, original_model, retrained_model) {
+  # Ensure data is sorted by Electrode_No and row number
+  test_data <- test_data %>% arrange(Electrode_No, row_number())
+  
+  # Initialize columns for cumul_drift, drift, and predictions
+  test_data <- test_data %>%
+    group_by(Electrode_No) %>%
+    mutate(cumul_drift = ifelse(row_number() == 1, 0, NA),
+           drift = 0,
+           predicted_cl_conc_no_drift = NA,
+           predicted_cl_conc_updated = NA)
+  
+  # Iterate through each group (Electrode_No)
+  for (group_key in unique(test_data$Electrode_No)) {
+    group_data <- test_data %>%
+      filter(Electrode_No == group_key)
+    
+    # Loop through rows in the group
+    for (i in seq_len(nrow(group_data))) {
+      # Extract the current row for prediction
+      row <- group_data[i, ]
+      
+      # Prepare input features for both models
+      input_features_no_drift <- data.frame(v_in = row$v_in, v_f = row$v_f)  # No drift
+      input_features_with_drift <- data.frame(v_in = row$v_in, v_f = row$v_f, cumul_drift = row$cumul_drift)  # With drift
+      
+      # Predict cl_conc using the no-drift model
+      predicted_no_drift <- predict(original_model, input_features_no_drift)
+      
+      # Predict cl_conc using the model with drift, or fallback to no-drift prediction if cumul_drift = 0
+      if (row$cumul_drift == 0) {
+        predicted_with_drift <- predicted_no_drift
+      } else {
+        predicted_with_drift <- predict(retrained_model, input_features_with_drift)
+      }
+      
+      # Store predictions
+      group_data$predicted_cl_conc_no_drift[i] <- predicted_no_drift
+      group_data$predicted_cl_conc_updated[i] <- predicted_with_drift
+      
+      # Calculate drift for the next row
+      if (i < nrow(group_data)) {
+        drift_value <- predicted_with_drift * 600 * 0.1  # Assuming 0.1 is the time interval
+        group_data$drift[i + 1] <- drift_value
+        group_data$cumul_drift[i + 1] <- group_data$cumul_drift[i] + drift_value
+      }
+    }
+    
+    # Replace group data in the main data frame
+    test_data[test_data$Electrode_No == group_key, ] <- group_data
+  }
+  
+  return(test_data)
+}
+
+```
+
+## Parity plot for original model
+
+```{r original model parity plot}
+
+x_limits <- c(0,250)
+y_limits <- c(0,250)
+
+pred_train <- predict(original_model, newdata = traindata_original)
+
+parity_train <- data.frame(
+  Observed = traindata_original$cl_conc,
+  Predicted = pred_train
+)
+
+plotA <- ggplot(parity_train, aes(x = Observed, y = Predicted)) +
+  geom_point(size = 3) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(title = "Panel A. Train Data",
+       y = "Predicted Values (mM)",
+       x = "Observed Values (mM)") +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, size = 1), 
+    axis.text.x = element_text(size = 20, angle = 0, vjust = 0.5, hjust = 0.5),  # Angle labels slightly downward
+    axis.text.y = element_text(size = 20), 
+    plot.title = element_text(size = 20), 
+    axis.title.x = element_text(size = 20), 
+    axis.title.y = element_text(size = 20),
+    legend.title = element_text(size = 14),   
+    legend.text = element_text(size = 12)
+  )  
+
+pred_test <- predict(original_model, newdata = testdata_original)
+
+parity_test <- data.frame(
+  Observed = testdata_original$cl_conc,
+  Predicted = pred_test
+)
+
+plotB <- ggplot(parity_test, aes(x = Observed, y = Predicted)) +
+  geom_point(size = 3) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(title = "Panel B. Test Data",
+       y = "Predicted Values (mM)",
+       x = "Observed Values (mM)") +
+  coord_cartesian(xlim = x_limits, ylim = y_limits) +
+  theme_bw() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, size = 1), 
+    axis.text.x = element_text(size = 20, angle = 0, vjust = 0.5, hjust = 0.5),  # Angle labels slightly downward
+    axis.text.y = element_text(size = 20), 
+    plot.title = element_text(size = 20), 
+    axis.title.x = element_text(size = 20), 
+    axis.title.y = element_text(size = 20),
+    legend.title = element_text(size = 14),   
+    legend.text = element_text(size = 12)
+  ) 
+
+panel <- arrangeGrob(plotA, plotB, ncol = 2, nrow = 1)
+
+ggsave("parity original model.png", plot = panel, width = 15, height = 6, units = "in", dpi=300)
+
+```
+![](parity original model.png)
+
+## Plot for non-random dataset
+
+```{r plot non-random dataset}
+
+#for the corrected values
+nonrandomresults_test <- predict_sequential_rf(testdata_nonrandom, original_model, retrained_model)
+nonrandomresults_train <- predict_sequential_rf(traindata_nonrandom, original_model, retrained_model)
+
+test_parity_corrected <- data.frame(
+  Observed = testdata_nonrandom$cl_conc,
+  Predicted = nonrandomresults_test$predicted_cl_conc_updated,
+  Uncorrected = nonrandomresults_test$predicted_cl_conc_no_drift,
+  v_in = testdata_nonrandom$v_in,
+  v_f = testdata_nonrandom$v_f,
+  cumul_drift = nonrandomresults_test$cumul_drift,
+  Rep_No = testdata_nonrandom$Rep_No
+)
+
+train_parity_corrected <- data.frame(
+  Observed = nonrandomresults_train$cl_conc,
+  Predicted = nonrandomresults_train$predicted_cl_conc_updated,
+  Uncorrected = nonrandomresults_train$predicted_cl_conc_no_drift,
+  v_in = traindata_nonrandom$v_in,
+  v_f = traindata_nonrandom$v_f,
+  cumul_drift = nonrandomresults_train$cumul_drift,
+  Rep_No = traindata_nonrandom$Rep_No
+)
+
+non_random_corrected <- full_join(test_parity_corrected, train_parity_corrected)
+
+summary_nonrandom_corrected <- non_random_corrected %>%
+  group_by(Observed, Rep_No) %>%
+  summarize(
+  Mean_Conc = mean(Predicted),
+  SD = sd(Predicted),
+  N = n(),
+  v_in = mean(v_in),
+  v_f = mean(v_f),
+  SE = SD/sqrt(N))
+
+summary_nonrandom_corrected <- summary_nonrandom_corrected %>%
+  mutate(Rep_No = factor(Rep_No, levels = paste0("R", 1:20)))
+summary_nonrandom_corrected$Observed <- as.factor(summary_nonrandom_corrected$Observed)
+
+custom_colors <- c("25" = "#006837", "50" = "#a8ddb5", "100" = "#43a2ca")
+custom_shapes <- c("25" = 21, "50" = 24, "100" = 23)
+
+y_limits = c(0,130)
+
+plot2 <- ggplot(summary_nonrandom_corrected, aes(x=Rep_No, y=Mean_Conc, fill = Observed, shape = Observed)) + 
+  geom_errorbar(aes(ymin = Mean_Conc - SE, ymax = Mean_Conc + SE), linewidth = 1, width = 1, position = position_dodge(width = 0.5)) +
+  geom_point(size = 13, position = position_dodge(width = 0.5), stroke = 1, color = "black") + 
+  geom_hline(yintercept = 25, linetype = "dashed") +
+  geom_hline(yintercept = 50, linetype = "dashed") +
+  geom_hline(yintercept = 100, linetype = "dashed") +
+  xlab("Test Number") + 
+  ylab("Predicted Chloride (mM)") + 
+  labs(fill = "Target Chloride (mM)", shape = "Target Chloride (mM)") + 
+  ggtitle("B. Corrected Values") + 
+  scale_fill_manual(values = custom_colors, 
+                     limits = rev(names(custom_colors))) +  # Reverse the order for colors
+  scale_shape_manual(values = custom_shapes, 
+                     limits = rev(names(custom_shapes))) +
+  coord_cartesian(ylim = y_limits) + 
+  theme_bw() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, size = 1), 
+    axis.text.x = element_text(size = 35, angle = 0, vjust = 0.5, hjust = 0.5), 
+    axis.text.y = element_text(size = 40), 
+    plot.title = element_text(size = 40), 
+    axis.title.x = element_text(size = 40), 
+    axis.title.y = element_text(size = 40),
+    legend.title = element_text(size = 35),   
+    legend.text = element_text(size = 35),
+    axis.ticks.length=unit(.25, "cm")
+  )
+
+
+#for the uncorrected values
+features <- nonrandom_order_dataset %>% select(c(5,6))
+
+nonrandomresults_uncorreted <- predict(original_model, newdata = features) 
+
+parity_nonrandom_uncorrected <- data.frame(
+  Observed = nonrandom_order_dataset$cl_conc,
+  Predicted = nonrandomresults_uncorreted,
+  Rep_No = nonrandom_order_dataset$Rep_No
+)
+
+parity_nonrandom_uncorrected <- parity_nonrandom_uncorrected %>%
+  arrange(Observed, Rep_No)
+
+summary_nonrandom_uncorrected <- parity_nonrandom_uncorrected %>%
+  group_by(Observed, Rep_No) %>%
+  summarize(
+  Mean_Conc = mean(Predicted),
+  SD = sd(Predicted),
+  N = n(),
+  SE = SD/sqrt(N))
+
+summary_nonrandom_uncorrected <- summary_nonrandom_uncorrected %>%
+  mutate(Rep_No = factor(Rep_No, levels = paste0("R", 1:20)))
+summary_nonrandom_uncorrected$Observed <- as.factor(summary_nonrandom_uncorrected$Observed)
+
+summary_nonrandom_corrected <- summary_nonrandom_corrected %>%
+  mutate("Prediction_Type" = "B. Corrected Values")
+summary_nonrandom_uncorrected <- summary_nonrandom_uncorrected %>%
+  mutate("Prediction_Type" = "A. Uncorrected Values")
+summariesnonrandom <- full_join(summary_nonrandom_corrected, summary_nonrandom_uncorrected)
+
+summariesnonrandom$Prediction_Type <- factor(summariesnonrandom$Prediction_Type, 
+                                             levels = c("A. Uncorrected Values", "B. Corrected Values"))
+
+
+summariesnonrandom <- summariesnonrandom %>%
+  arrange(Observed, Rep_No)
+
+custom_colors <- c("25" = "#006837", "50" = "#a8ddb5", "100" = "#43a2ca")
+custom_shapes <- c("25" = 21, "50" = 24, "100" = 23)
+
+y_limits <- c(0,130)
+
+plot_facet <- ggplot(summariesnonrandom, aes(x=Rep_No, y=Mean_Conc, fill = Observed, shape = Observed)) + 
+  geom_errorbar(aes(ymin = Mean_Conc - SE, ymax = Mean_Conc + SE), linewidth = 1, width = 1, position = position_dodge(width = 0.5)) +
+  geom_point(size = 13, position = position_dodge(width = 0.5), stroke = 1, color = "black") + 
+  geom_hline(yintercept = 25, linetype = "dashed") +
+  geom_hline(yintercept = 50, linetype = "dashed") +
+  geom_hline(yintercept = 100, linetype = "dashed") +
+  facet_wrap(~Prediction_Type, ncol = 1) +
+  xlab("Test Number") + 
+  ylab("Predicted Chloride (mM)") + 
+  labs(fill = "Target Chloride (mM)", shape = "Target Chloride (mM)") + 
+  scale_fill_manual(values = custom_colors, 
+                     limits = rev(names(custom_colors))) +  # Reverse the order for colors
+  scale_shape_manual(values = custom_shapes, 
+                     limits = rev(names(custom_shapes))) +
+  scale_y_continuous(breaks = seq(0, 150, by = 25)) +
+  coord_cartesian(ylim = y_limits) + 
+  theme_bw() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, size = 1), 
+    axis.text.x = element_text(size = 35, angle = 0, vjust = 0.5, hjust = 0.5), 
+    axis.text.y = element_text(size = 40), 
+    plot.title = element_text(size = 40), 
+    axis.title.x = element_text(size = 40), 
+    axis.title.y = element_text(size = 40),
+    legend.title = element_text(size = 35),   # Size of legend title
+    legend.text = element_text(size = 35),
+    strip.text = element_text(size = 35),
+    axis.ticks.length=unit(.25, "cm")
+    #legend.position = c(0.95, 0.95),               # Position the legend at the top-left corner
+   # legend.justification = c(1, 1)  
+    #legend.position = "none" # Size of legend text
+  )
+
+ggsave("non-random facet.png", plot_facet, width = 30, height = 15, dpi=300)
+
+```
+![](non-random facet.png)
+
+## Plot for random dataset
+
+```{r facet_plot}
+
+results_random <- predict_sequential_rf(random_order_dataset, original_model, retrained_model)
+
+par_repeat_random <- data.frame(
+  Observed = random_order_dataset$cl_conc,
+  Predicted = results_random$predicted_cl_conc_updated,
+  Rep_No = random_order_dataset$Rep_No,
+  Experiment_No = random_order_dataset$Experiment_No
+) 
+
+y_limits <- c(0,130)
+
+custom_colors <- c("25" = "#006837", "50" = "#a8ddb5", "100" = "#43a2ca")
+custom_shapes <- c("25" = 21, "50" = 24, "100" = 23)
+
+par_repeat_random$Observed <- as.factor(par_repeat_random$Observed)
+par_repeat_random <- par_repeat_random %>%
+  mutate(Rep_No = factor(Rep_No, levels = paste0("R", 1:20)))
+
+par_repeat_random$exp_label <- factor(par_repeat_random$Experiment_No, 
+                            levels = c("1", "2", "3"),
+                            labels = c("A.~Experiment~1", "B.~Experiment~2", "C.~Experiment~3"))
+
+#corrected predictions for 3 experiments of random order data
+randomfacet <- ggplot(par_repeat_random, aes(x = Rep_No, y = Predicted, fill = Observed, shape = Observed)) +
+  geom_point(size = 15, stroke = 1, color = "black") +  # Set border color explicitly
+  xlab("Test Number") +
+  ylab("Predicted Chloride (mM)") +
+  geom_hline(yintercept = 25, linetype = "dashed") +
+  geom_hline(yintercept = 50, linetype = "dashed") +
+  geom_hline(yintercept = 100, linetype = "dashed") +
+  labs(fill = "Target Chloride (mM)", shape = "Target Chloride (mM)") + 
+  facet_wrap(~exp_label, ncol = 1, labeller = label_parsed) +
+  scale_fill_manual(
+    values = custom_colors,
+    limits = rev(names(custom_colors))
+  ) +
+  scale_shape_manual(
+    values = custom_shapes,
+    limits = rev(names(custom_shapes))
+  ) +
+  scale_y_continuous(breaks = seq(0, 125, by = 25)) +
+  theme_bw() +
+  coord_cartesian(ylim = y_limits) +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, size = 1),
+    axis.text.x = element_text(size = 35, angle = 0, vjust = 0.5, hjust = 0.5),
+    axis.text.y = element_text(size = 40),
+    plot.title = element_text(size = 40),
+    axis.title.x = element_text(size = 40),
+    axis.title.y = element_text(size = 40),
+    legend.title = element_text(size = 35),
+    legend.text = element_text(size = 35),
+    strip.text = element_text(size = 35),
+    axis.ticks.length = unit(.25, "cm")
+  )
+
+ggsave("random_facet.png", plot = randomfacet, width = 30, height = 20, dpi = 300)
+```
+![](random_facet.png)
