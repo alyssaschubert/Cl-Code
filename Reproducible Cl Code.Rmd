@@ -117,7 +117,7 @@ predict_sequential_rf <- function(test_data, original_model, retrained_model) {
       
       # Calculate fouling for the next row
       if (i < nrow(group_data)) {
-        drift_value <- predicted_with_fouling * 600 * 0.1  # Assuming 600 is the current density and 0.1 is the time interval
+        fouling_value <- predicted_with_fouling * 600 * 0.1  # Assuming 600 is the current density and 0.1 is the time interval
         group_data$fouling[i + 1] <- fouling_value
         group_data$cumul_drift[i + 1] <- group_data$cumul_drift[i] + fouling_value
       }
