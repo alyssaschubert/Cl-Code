@@ -72,6 +72,7 @@ print(retrained_model)
 ```
 
 ## Function to calculative cumulative fouling feature
+#this function was written with assistance from chatgpt
 
 ```{r cumulative fouling function}
 
