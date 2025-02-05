@@ -76,7 +76,7 @@ print(retrained_model)
 ```{r cumulative fouling function}
 
 predict_sequential_rf <- function(test_data, original_model, retrained_model) {
-  # Ensure data is sorted by Electrode_No and row number
+  # Ensure data is sorted by Electrode_No and row number so that the data are in numerical order
   test_data <- test_data %>% arrange(Electrode_No, row_number())
   
   # Initialize columns for cumul_drift, drift, and predictions
@@ -98,28 +98,28 @@ predict_sequential_rf <- function(test_data, original_model, retrained_model) {
       row <- group_data[i, ]
       
       # Prepare input features for both models
-      input_features_no_drift <- data.frame(v_in = row$v_in, v_f = row$v_f)  # No drift
-      input_features_with_drift <- data.frame(v_in = row$v_in, v_f = row$v_f, cumul_drift = row$cumul_drift)  # With drift
+      input_features_no_foul <- data.frame(v_in = row$v_in, v_f = row$v_f)  # original features; no fouling correction
+      input_features_with_foul <- data.frame(v_in = row$v_in, v_f = row$v_f, cumul_drift = row$cumul_drift)  # With fouling correction
       
-      # Predict cl_conc using the no-drift model
-      predicted_no_drift <- predict(original_model, input_features_no_drift)
+      # Predict cl_conc using the no-fouling model
+      predicted_no_fouling <- predict(original_model, input_features_no_foul)
       
-      # Predict cl_conc using the model with drift, or fallback to no-drift prediction if cumul_drift = 0
+      # Predict cl_conc using the model with fouling, or fallback to no-fouling prediction if cumul_drift = 0
       if (row$cumul_drift == 0) {
-        predicted_with_drift <- predicted_no_drift
+        predicted_with_fouling <- predicted_no_fouling
       } else {
-        predicted_with_drift <- predict(retrained_model, input_features_with_drift)
+        predicted_with_fouling <- predict(retrained_model, input_features_with_fouling)
       }
       
       # Store predictions
-      group_data$predicted_cl_conc_no_drift[i] <- predicted_no_drift
-      group_data$predicted_cl_conc_updated[i] <- predicted_with_drift
+      group_data$predicted_cl_conc_no_fouling[i] <- predicted_no_fouling
+      group_data$predicted_cl_conc_fouling[i] <- predicted_with_fouling
       
-      # Calculate drift for the next row
+      # Calculate fouling for the next row
       if (i < nrow(group_data)) {
-        drift_value <- predicted_with_drift * 600 * 0.1  # Assuming 0.1 is the time interval
-        group_data$drift[i + 1] <- drift_value
-        group_data$cumul_drift[i + 1] <- group_data$cumul_drift[i] + drift_value
+        drift_value <- predicted_with_fouling * 600 * 0.1  # Assuming 600 is the current density and 0.1 is the time interval
+        group_data$fouling[i + 1] <- fouling_value
+        group_data$cumul_drift[i + 1] <- group_data$cumul_drift[i] + fouling_value
       }
     }
     
